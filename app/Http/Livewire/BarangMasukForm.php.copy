@@ -1,0 +1,201 @@
+<?php
+
+namespace App\Http\Livewire;
+
+use App\Models\ActivityLog;
+use App\Models\BarangKeluar;
+use App\Models\BarangMasuk;
+use App\Models\PenanggungJawab;
+use Illuminate\Support\Facades\Auth;
+use RealRashid\SweetAlert\Facades\Alert;
+use Illuminate\Support\Facades\Storage;
+use Livewire\Component;
+use Livewire\WithFileUploads;
+
+
+class BarangMasukForm extends Component
+{
+    use WithFileUploads;
+
+    public $penanggungJawab, $category_id, $merek, $unitKeluar, $keterangan, $device_id, $gambar, $unit, $pemilik, $device, $tanggalKeluar, $type, $status;
+    public $serialNumber = [];
+    public $serialNumbers = [];
+    public $modalId;
+    public $action;
+    protected $messages = [
+        'unitKeluar.max' => 'The units exceed stock.',
+    ];
+
+    protected $listeners = [
+        'getModalId',
+        'getModal'
+    ];
+
+
+
+    public function getModal($mdoalId, $action, $sn = null)
+    {
+        $this->action = $action;
+        $this->modalId = $mdoalId;
+        $barang = BarangMasuk::find($this->modalId);
+        $this->keterangan = $barang->keterangan;
+	$this->status = $barang->satusBarang;
+        if ($sn) {
+            $this->serialNumber = $sn;
+        }
+        $this->device = $barang->device;
+        $this->merek = $barang->merek;
+        $this->category_id = $barang->category_id;
+        $this->unit = $barang->unit;
+        $this->device_id = $barang->device_id;
+        if ($action == "keluar") {
+            $this->pemilik = $barang->pemilik;
+            $this->unitKeluar = count($barang->serialNumber);
+            $this->serialNumber = $barang->serialNumber;
+            $this->type = $barang->type;
+        } elseif ($action == "keluar-2") {
+            $this->serialNumber = $barang->serialNumber;
+            if ($this->unit == 1) {
+                $this->unitKeluar = 1;
+            }
+        }
+    }
+
+
+    public function getModalId($modalId, $serialNumber)
+    {
+        $this->modalId = $modalId;
+        $this->serialNumber = [$serialNumber];
+
+        $barang = BarangMasuk::find($this->modalId);
+
+        $this->keterangan = $barang->keterangan;
+        $this->device = $barang->device;
+        $this->merek = $barang->merek;
+        $this->category_id = $barang->category_id;
+        $this->unit = $barang->unit;
+    }
+
+    public function save()
+    {
+
+        $validation = [
+            'tanggalKeluar' => 'required|date',
+            'pemilik' => 'required',
+            'penanggungJawab' => 'required',
+        ];
+
+        if (Auth::user()->categories()->pluck('id')[0] == 2 || Auth::user()->categories()->pluck('id')[0] == 3) {
+            $validation['pemilik'] = 'nullable';
+            $validation['unitKeluar'] = "required|numeric|min:1|max:{$this->unit}";
+        }
+        if (!empty($this->serialNumbers)) {
+            $this->serialNumber = $this->serialNumbers;
+            $this->unitKeluar = count($this->serialNumbers);
+        }
+
+
+        $this->validate($validation);
+
+        $data = [
+            'category_id' => $this->category_id,
+            'device_id' => $this->device_id,
+            'masuk_id' => $this->modalId,
+            'satusBarang' => $this->status,
+            'penangungJawab_id' => $this->penanggungJawab,
+            'serialNumber' => $this->serialNumber,
+            'merek' => $this->merek,
+            'unitKeluar' => $this->unitKeluar,
+            'tanggalKeluar' => $this->tanggalKeluar,
+            'type' => $this->type,
+            'device' => $this->device,
+            'keterangan' => $this->keterangan,
+        ];
+
+        if ($this->action == 'keluar-2') {
+            $data['serialNumber'] = array_slice($this->serialNumber, 0, $this->unitKeluar);
+        }
+
+
+
+        if ($this->pemilik) {
+            $data['pemilik'] = $this->pemilik;
+        }
+
+
+        if ($this->gambar) {
+            $data['gambar'] = $this->gambar->hashName();
+            $validation['gambar'] = 'image|max:2048';
+            $this->gambar->storeAs('public/ImagesBarangKeluar', $this->gambar->hashName());
+        }
+
+        $valid = BarangKeluar::create($data);
+
+
+        if ($valid) {
+	 $dataUpdate = [
+                'category_id' => $valid->category_id,
+                'keterangan' => "Pengeluaran Barang ({$valid->device}) dengan jumlah {$valid->unitKeluar} unit, yang dikeluarkan oleh user " . Auth::user()->username,
+                'method' => "POST",
+            ];
+
+            if (Auth::user()->categories->pluck('id')[0] != 1) {
+
+                $satuan = $valid->device_categories->jenis_id == 1 ? 'Unit' : 'Meter';
+                $dataUpdate['keterangan'] = "Pengeluaran Barang ({$valid->device_categories->name}) dengan jumlah {$valid->unitKeluar} {$satuan}, yang dikeluarkan oleh user " . Auth::user()->username;
+            }
+
+            ActivityLog::create($dataUpdate);
+            $barangMasuk = BarangMasuk::find($this->modalId);
+            $serial = $barangMasuk->serialNumber;
+
+            if (!empty($serial)) {
+                if ($this->action == 'selectSerial') {
+                    $serial = array_values(array_diff($serial, $this->serialNumber));
+                } elseif ($this->action == 'keluar-2') {
+                    array_splice($serial, 0, $this->unitKeluar);
+                } else {
+                    $serial = array_values(array_diff($serial, $this->serialNumber));
+                }
+
+                $barangMasuk->update([
+                    'unit' => $barangMasuk->unit - $this->unitKeluar,
+                    'serialNumber' => $serial
+                ]);
+            } else {
+                $barangMasuk->update([
+                    'unit' => $barangMasuk->unit - $this->unitKeluar,
+                ]);
+            }
+
+
+
+            Alert::success('Success', 'Data Has Been Added Successfully');
+        }
+
+        $this->emit('refreshParent');
+        $this->dispatchBrowserEvent('closemodal');
+        $this->cleanVars();
+    }
+    private function cleanVars()
+    {
+        $this->serialNumber = [];
+	$this->pemilik = null;
+	$this->unitKeluar = null;
+        $this->penanggungJawab;
+        $this->tanggalKeluar = null;
+        $this->keterangan = null;
+        $this->gambar = null;
+    }
+
+
+    public function render()
+    {
+        $categori_id = Auth::user()->categories()->pluck('id');
+        $pnj = PenanggungJawab::where('category_id', $categori_id)->get();
+        return view('livewire.barang-masuk-form', [
+            "penangungJawab" => $pnj
+
+        ]);
+    }
+}
